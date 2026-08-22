@@ -10,7 +10,7 @@ Funciona con **Claude Code / Claude Desktop** y con **LLMs locales** (LM Studio,
 
 ## Características
 
-- **34 herramientas** en 6 grupos: meta, mercado (público), cuenta, trading, bots, earn.
+- **43 herramientas** en 7 grupos: meta, mercado (público), análisis técnico (EMAs, RSI, MACD, FVG, order blocks, estructura), cuenta, trading, bots, earn.
 - **Solo-lectura por defecto** — el trading, los bots y earn están desactivados hasta que el operador los habilita por variable de entorno.
 - **Commit en dos fases** — toda acción que cambia estado (`prepare_*` → `confirm_action`) requiere un token de un solo uso, ligado criptográficamente a los parámetros validados y con caducidad.
 - **Verificación de símbolos en vivo** — un par que no existe en Pionex jamás llega a la API.
@@ -127,7 +127,7 @@ Tres vías (detalle en [`docs/GUIA.md`](docs/GUIA.md#6-integración-con-un-llm-l
 
 - **LM Studio**: soporta MCP nativamente — pega el mismo bloque `mcpServers` en su `mcp.json`.
 - **Ollama + [mcphost](https://github.com/mark3labs/mcphost)**: `mcphost -m ollama:qwen3 --config mcp.json`.
-- **Puente incluido**: `uv run examples/ollama_bridge.py "¿a cuánto está el BTC?"` — bucle agéntico completo contra Ollama con las 38 tools.
+- **Puente incluido**: `uv run examples/ollama_bridge.py "¿a cuánto está el BTC?"` — bucle agéntico completo contra Ollama con las 43 tools.
 
 Con modelos locales, mantén `PIONEX_MCP_TRADING_ENABLED=false` salvo supervisión estrecha: las guardas del servidor son las mismas, pero los modelos pequeños alucinan más.
 

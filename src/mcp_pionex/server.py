@@ -91,9 +91,10 @@ def get_safety_rules() -> str:
 # Register tool groups
 # ---------------------------------------------------------------------------
 
-from mcp_pionex.tools import market, account, trading, bots, earn  # noqa: E402
+from mcp_pionex.tools import market, analysis, account, trading, bots, earn  # noqa: E402
 
 market.register(mcp)
+analysis.register(mcp)
 account.register(mcp)
 trading.register(mcp)
 bots.register(mcp)

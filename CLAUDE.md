@@ -38,8 +38,11 @@ src/mcp_pionex/
 ├── client.py      # singletons perezosos de los clientes pionex_py
 │                  # (con fix del doble-slash en base_url — ver Gotchas)
 ├── actions.py     # registro EXECUTORS: nombre de acción -> función ejecutora
+├── ta.py          # análisis técnico puro (EMA/RSI/MACD/ATR/Bollinger, FVG,
+│                  # order blocks, swings) — determinista, sin red, testeado
 └── tools/
     ├── market.py   # público, sin credenciales
+    ├── analysis.py # análisis técnico sobre klines vivas (todo computed:true)
     ├── account.py  # lectura, requiere credenciales
     ├── trading.py  # dos fases, requiere PIONEX_MCP_TRADING_ENABLED
     ├── bots.py     # dos fases, requiere PIONEX_MCP_BOTS_ENABLED
@@ -100,7 +103,7 @@ con el modelo jamás debe poder cambiarlos — no añadas tools que modifiquen
 | `PIONEX_MCP_CONFIRMATION_TTL` | 120 | caducidad de tokens |
 | `PIONEX_MCP_AUDIT_LOG` | `~/.mcp_pionex/audit.jsonl` | log JSONL de prepare/execute |
 
-## Catálogo de tools (38)
+## Catálogo de tools (43)
 
 **Meta (2):** `get_server_status`, `get_safety_rules`.
 
@@ -108,6 +111,16 @@ con el modelo jamás debe poder cambiarlos — no añadas tools que modifiquen
 `get_symbol_info`, `get_price` (mid-price computado, marcado `computed`),
 `get_ticker_24h`, `get_book_ticker`, `get_depth`, `get_recent_trades`,
 `get_klines`, `get_klines_history` (paginado hasta 5000 velas).
+
+**Análisis técnico — público, todo `computed` (5):** `get_emas`,
+`get_indicators` (RSI 14, MACD 12-26-9, ATR 14, Bollinger 20-2, SMA/EMA
+20/50/200), `detect_fvg` (Fair Value Gaps, definición 3-velas, con estado
+open/partially_filled/filled), `detect_order_blocks` (heurística de
+desplazamiento cuerpo > factor×ATR, estado fresh/mitigated/broken),
+`get_market_structure` (swings fractales HH/LH/HL/LL + tendencia). Cálculo
+puro en `ta.py` (testeado offline en `tests/test_ta.py`); las tools en
+`tools/analysis.py` solo obtienen klines vivas y envuelven con `computed:
+true` + nota con la definición exacta.
 
 **Cuenta — lectura con credenciales (8):** `get_balances`, `get_portfolio`
 (valorado en vivo, `computed`), `get_open_orders`, `get_order`,
@@ -179,6 +192,6 @@ del exchange, sin crear nada), `prepare_create_spot_grid`,
   posturas de seguridad, troubleshooting, extensión.
 - `docs/INFORME.md` — informe completo de capacidades y manual de uso.
 - `examples/ollama_bridge.py` — puente agéntico Ollama↔MCP de referencia.
-- `.github/workflows/ci.yml` — CI: tests + comprobación de 38 tools.
+- `.github/workflows/ci.yml` — CI: tests + comprobación de 43 tools.
 - API oficial: <https://pionex-doc.gitbook.io/apidocs/> y
   <https://github.com/pionex-official/pionex-open-api>.

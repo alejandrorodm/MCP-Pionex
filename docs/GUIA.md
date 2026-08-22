@@ -148,7 +148,7 @@ LM Studio (≥ 0.3.17) acepta el mismo formato `mcpServers`. En **Program → In
 }
 ```
 
-Carga un modelo con tool-calling (Qwen3, Llama 3.1+, Mistral…) y las 38 tools aparecen en el chat. LM Studio pide confirmación por cada llamada a tool — una capa más sobre el prepare/confirm del servidor.
+Carga un modelo con tool-calling (Qwen3, Llama 3.1+, Mistral…) y las 43 tools aparecen en el chat. LM Studio pide confirmación por cada llamada a tool — una capa más sobre el prepare/confirm del servidor.
 
 ### 6.2 Ollama + mcphost
 
@@ -173,12 +173,13 @@ Es también la referencia si quieres integrar cualquier otro runtime (llama.cpp,
 
 > **Importante con modelos locales**: los modelos pequeños alucinan más, no menos. Las guardas del servidor son idénticas (un símbolo inventado se rechaza igual), pero mantén `PIONEX_MCP_TRADING_ENABLED=false` con modelos locales salvo que supervises cada confirmación.
 
-## 7. Catálogo de herramientas (38)
+## 7. Catálogo de herramientas (43)
 
 | Grupo | Tools | Acceso |
 |---|---|---|
 | Meta | `get_server_status`, `get_safety_rules` | siempre |
 | Mercado (9) | `list_symbols`, `get_symbol_info`, `get_price`, `get_ticker_24h`, `get_book_ticker`, `get_depth`, `get_recent_trades`, `get_klines`, `get_klines_history` | público |
+| Análisis técnico (5) | `get_emas`, `get_indicators`, `detect_fvg`, `detect_order_blocks`, `get_market_structure` | público (todo `computed`) |
 | Cuenta (8) | `get_balances`, `get_portfolio`, `get_open_orders`, `get_order`, `get_order_by_client_id`, `get_order_history`, `get_fills`, `get_fills_by_order` | API key |
 | Trading (6) | `prepare_order`, `confirm_action`, `prepare_cancel_all_orders`, `cancel_order`, `compute_rebalance_plan`, `prepare_rebalance` | gate trading |
 | Bots (6) | `list_bot_orders`, `get_spot_grid`, `get_grid_ai_strategy`, `check_spot_grid_params`, `prepare_create_spot_grid`, `prepare_cancel_spot_grid` | lectura: API key · escritura: gate bots |
@@ -189,6 +190,8 @@ Detalle campo a campo en [`INFORME.md`](INFORME.md).
 ## 8. Flujos de trabajo
 
 **Análisis de mercado** — `get_ticker_24h` → `get_klines(interval="1D")` → `get_depth`. Todo público, sin riesgo.
+
+**Análisis técnico / SMC** — `get_indicators` (RSI, MACD, ATR, Bollinger) + `get_emas("20,50,200")` para el contexto; `get_market_structure` para la tendencia (HH/HL vs LH/LL); `detect_fvg(only_open=True)` y `detect_order_blocks` para zonas de interés. Todo se calcula sobre velas vivas y viene marcado `computed: true` con la definición exacta en `note` — pide al asistente que cite las zonas con sus timestamps. Ejemplo: *«analiza BTC_USDT en 4H: tendencia, FVGs abiertos y order blocks sin mitigar cerca del precio»*.
 
 **Compra/venta** — `prepare_order` → mostrar resumen → aprobación humana → `confirm_action`. Reglas de la API: LIMIT lleva `price`+`size`; MARKET BUY lleva `amount` (quote); MARKET SELL lleva `size` (base). Números como strings.
 
@@ -226,7 +229,7 @@ Detalle campo a campo en [`INFORME.md`](INFORME.md).
 uv run --with pytest pytest tests/ -q     # 11 tests offline de la capa de seguridad
 ```
 
-CI en GitHub Actions ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): tests + comprobación de que las 38 tools registran, en Python 3.11 y 3.12.
+CI en GitHub Actions ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): tests + comprobación de que las 43 tools registran, en Python 3.11 y 3.12.
 
 **Añadir una acción de escritura nueva** (p. ej. futures grid):
 

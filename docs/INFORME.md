@@ -1,12 +1,12 @@
 # Informe de capacidades — Servidor MCP para Pionex (`mcp-pionex`)
 
-**Fecha:** 2026-08-22 · **Versión:** 1.0.0 · **Base:** librería `pionex_py` 1.2.0 · **SDK:** `mcp` ≥ 2.0
+**Fecha:** 2026-08-22 · **Versión:** 1.1.0 · **Base:** librería `pionex_py` 1.2.0 · **SDK:** `mcp` ≥ 2.0
 
 ## 1. Resumen ejecutivo
 
-`mcp-pionex` convierte la librería `pionex_py` en un servidor **Model Context Protocol** que permite a un asistente de IA (Claude Code, Claude Desktop o cualquier cliente MCP) consultar y operar el exchange Pionex con **38 herramientas** organizadas en 6 grupos. Su rasgo diferencial es una **capa de seguridad anti-alucinación**: ningún dato inventado por el modelo puede llegar a la API, y ninguna operación con dinero se ejecuta sin validación contra datos vivos del exchange más una confirmación en dos fases aprobada por el humano.
+`mcp-pionex` convierte la librería `pionex_py` en un servidor **Model Context Protocol** que permite a un asistente de IA (Claude Code, Claude Desktop o cualquier cliente MCP) consultar y operar el exchange Pionex con **43 herramientas** organizadas en 7 grupos. Su rasgo diferencial es una **capa de seguridad anti-alucinación**: ningún dato inventado por el modelo puede llegar a la API, y ninguna operación con dinero se ejecuta sin validación contra datos vivos del exchange más una confirmación en dos fases aprobada por el humano.
 
-Estado verificado: las 38 tools registran correctamente, las herramientas públicas funcionan contra la API real de Pionex, los 11 tests offline de la capa de seguridad pasan, y el flujo completo prepare→confirm se ha probado de extremo a extremo (incluyendo bloqueos por tope de nocional, desviación de precio, token caducado/reutilizado y passthrough literal de errores de la API como `INVALID_APIKEY`).
+Estado verificado: las 43 tools registran correctamente, las herramientas públicas funcionan contra la API real de Pionex, los 28 tests offline (capa de seguridad + análisis técnico) pasan, y el flujo completo prepare→confirm se ha probado de extremo a extremo (incluyendo bloqueos por tope de nocional, desviación de precio, token caducado/reutilizado y passthrough literal de errores de la API como `INVALID_APIKEY`).
 
 ## 2. Inventario de capacidades
 
@@ -31,7 +31,19 @@ Estado verificado: las 38 tools registran correctamente, las herramientas públi
 | `get_klines` | `GET /api/v1/market/klines` | Velas; intervalos exactos 1M,5M,15M,30M,60M,4H,8H,12H,1D; 1–500 |
 | `get_klines_history` | klines paginado | Hasta 5000 velas, orden antiguo→reciente |
 
-### 2.3 Cuenta (8 tools, lectura, requieren API key)
+### 2.3 Análisis técnico (5 tools, públicas, todo `computed`)
+
+Indicadores y conceptos SMC calculados con fórmulas deterministas (`ta.py`, testeado offline) sobre klines obtenidas en vivo. Cada respuesta lleva `computed: true` y una nota con la definición exacta usada — el modelo cita el método y nunca presenta una heurística como hecho del exchange.
+
+| Tool | Qué calcula | Definición |
+|---|---|---|
+| `get_emas` | EMAs de periodos configurables (defecto 20/50/200) con posición del precio y distancia % | EMA estándar: semilla SMA, k = 2/(n+1) |
+| `get_indicators` | RSI(14), MACD(12,26,9), ATR(14), Bollinger(20,2), SMA/EMA 20/50/200 | RSI y ATR de Wilder; Bollinger SMA20±2σ |
+| `detect_fvg` | Fair Value Gaps con zona, timestamp y estado `open`/`partially_filled`/`filled` | 3 velas: alcista si low[i+1] > high[i-1]; filtro `min_gap_pct` opcional |
+| `detect_order_blocks` | Order blocks con zona y estado `fresh`/`mitigated`/`broken` | Última vela contraria antes de un desplazamiento (cuerpo > factor×ATR14) |
+| `get_market_structure` | Swings etiquetados HH/LH/HL/LL y tendencia `uptrend`/`downtrend`/`range` | Fractales de N velas por lado; tendencia de las últimas 4 etiquetas |
+
+### 2.4 Cuenta (8 tools, lectura, requieren API key)
 
 | Tool | Endpoint | Notas |
 |---|---|---|
@@ -44,7 +56,7 @@ Estado verificado: las 38 tools registran correctamente, las herramientas públi
 | `get_fills` | `GET /api/v1/trade/fills` | Ejecuciones recientes con comisión y rol |
 | `get_fills_by_order` | `GET /api/v1/trade/fillsByOrderId` | Precio medio real de una orden |
 
-### 2.4 Trading spot (6 tools, requieren `PIONEX_MCP_TRADING_ENABLED=true`)
+### 2.5 Trading spot (6 tools, requieren `PIONEX_MCP_TRADING_ENABLED=true`)
 
 | Tool | Fase | Qué hace |
 |---|---|---|
@@ -57,7 +69,7 @@ Estado verificado: las 38 tools registran correctamente, las herramientas públi
 
 Reglas de una orden (idénticas a la API): LIMIT → `price`+`size`; MARKET BUY → `amount` en quote; MARKET SELL → `size` en base. Valores numéricos como strings, tal cual llegan al exchange.
 
-### 2.5 Grid bots (6 tools; escrituras requieren `PIONEX_MCP_BOTS_ENABLED=true`)
+### 2.6 Grid bots (6 tools; escrituras requieren `PIONEX_MCP_BOTS_ENABLED=true`)
 
 | Tool | Qué hace |
 |---|---|
@@ -68,7 +80,7 @@ Reglas de una orden (idénticas a la API): LIMIT → `price`+`size`; MARKET BUY 
 | `prepare_create_spot_grid` | Valida local + checkParams del exchange + tope de inversión → token |
 | `prepare_cancel_spot_grid` | Cierra un grid (muestra el estado vivo en el resumen) → token |
 
-### 2.6 Earn / Dual Investment (7 tools; escrituras requieren `PIONEX_MCP_EARN_ENABLED=true`)
+### 2.7 Earn / Dual Investment (7 tools; escrituras requieren `PIONEX_MCP_EARN_ENABLED=true`)
 
 | Tool | Qué hace |
 |---|---|
@@ -155,7 +167,7 @@ Cada guardia responde con el motivo exacto y la variable de entorno que lo contr
 
 | Prueba | Resultado |
 |---|---|
-| Registro de tools | 38/38 |
+| Registro de tools | 43/43 |
 | Tests offline capa seguridad (`pytest tests/`) | 11/11 pasan |
 | API pública real (precio, depth, ticker, klines, símbolos) | OK, valores vivos |
 | Símbolo inexistente / intervalo inválido / sin credenciales | Bloqueados con mensaje correctivo |
