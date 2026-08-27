@@ -29,6 +29,7 @@ data:
 """
 
 import functools
+import re
 import hashlib
 import json
 import os
@@ -36,7 +37,32 @@ import secrets
 import time
 from datetime import datetime, timezone
 
+from mcp.types import ToolAnnotations
+
 from mcp_pionex.config import SETTINGS
+
+# ---------------------------------------------------------------------------
+# MCP tool annotations (spec hints consumed by clients such as Claude Desktop,
+# Cursor and Glama). Every tool in this server declares exactly one of these.
+# ---------------------------------------------------------------------------
+
+#: Local introspection — no network, no side effects.
+LOCAL = ToolAnnotations(read_only_hint=True, destructive_hint=False,
+                        idempotent_hint=True, open_world_hint=False)
+#: Reads exchange data (public or account). Never changes state.
+READ = ToolAnnotations(read_only_hint=True, destructive_hint=False,
+                       idempotent_hint=True, open_world_hint=True)
+#: STEP 1 of the two-phase commit: validates against live data and stores a
+#: pending action server-side. Touches no exchange state, but is not
+#: read-only (it creates a token and an audit entry) and not idempotent
+#: (each call mints a fresh token).
+PREPARE = ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                          idempotent_hint=False, open_world_hint=True)
+#: Changes exchange state (orders, bots, investments). Marked idempotent
+#: because a confirmation token is single-use: repeating the call cannot
+#: execute the action twice.
+EXECUTE = ToolAnnotations(read_only_hint=False, destructive_hint=True,
+                          idempotent_hint=True, open_world_hint=True)
 
 # ---------------------------------------------------------------------------
 # Closed vocabularies (mirror pionex_py validators + Pionex API docs)
@@ -49,6 +75,10 @@ VALID_KLINE_INTERVALS = ("1M", "5M", "15M", "30M", "60M", "4H", "8H", "12H", "1D
 VALID_GRID_TYPES = ("arithmetic", "geometric")
 VALID_TRENDS = ("long", "short", "no_trend")
 VALID_DUAL_TYPES = ("DUAL_BASE", "DUAL_CURRENCY")
+VALID_CLOSE_SELL_MODELS = ("SELL", "HOLD")
+VALID_DUAL_FILTERS = ("ALL", "SETTLED", "UNSETTLED")
+
+_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
 class SafetyError(Exception):
@@ -219,6 +249,28 @@ def pending_count() -> int:
 
 
 # ---------------------------------------------------------------------------
+# Idempotency keys
+# ---------------------------------------------------------------------------
+
+def client_order_id(provided: str = "", prefix: str = "mcp") -> str:
+    """Return a validated client-side order id, minting one when none is given.
+
+    Every prepared order carries a clientOrderId so the operator can always
+    reconcile what was sent (``get_order_by_client_id``) even if the
+    confirm_action response is lost mid-flight. Server-minted ids look like
+    ``mcp-1a2b3c4d5e6f`` and are unique per prepare call.
+    """
+    if provided:
+        require(
+            bool(_CLIENT_ID_RE.match(provided)),
+            f"client_order_id {provided!r} is invalid: use 1-32 characters from "
+            f"[A-Za-z0-9_-]. Leave it empty to let the server generate one.",
+        )
+        return provided
+    return f"{prefix}-{secrets.token_hex(6)}"
+
+
+# ---------------------------------------------------------------------------
 # Provenance envelopes
 # ---------------------------------------------------------------------------
 
@@ -316,6 +368,25 @@ def require_bots() -> None:
         SETTINGS.bots_enabled,
         "Bot management is DISABLED. The operator must set PIONEX_MCP_BOTS_ENABLED=true "
         "in the server environment. This cannot be enabled from the conversation.",
+    )
+
+
+def require_futures() -> None:
+    require_bots()
+    require(
+        SETTINGS.futures_enabled,
+        "Futures grid bots are DISABLED. The operator must set "
+        "PIONEX_MCP_FUTURES_ENABLED=true (in addition to PIONEX_MCP_BOTS_ENABLED) "
+        "in the server environment. This cannot be enabled from the conversation.",
+    )
+
+
+def check_leverage(leverage: int) -> None:
+    require(
+        1 <= int(leverage) <= SETTINGS.max_leverage,
+        f"leverage {leverage} is outside the operator-configured range "
+        f"1..{SETTINGS.max_leverage} (PIONEX_MCP_MAX_LEVERAGE). "
+        f"This cap cannot be raised from the conversation.",
     )
 
 

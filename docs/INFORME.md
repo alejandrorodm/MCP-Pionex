@@ -4,9 +4,9 @@
 
 ## 1. Resumen ejecutivo
 
-`mcp-pionex` convierte la librería `pionex_py` en un servidor **Model Context Protocol** que permite a un asistente de IA (Claude Code, Claude Desktop o cualquier cliente MCP) consultar y operar el exchange Pionex con **43 herramientas** organizadas en 7 grupos. Su rasgo diferencial es una **capa de seguridad anti-alucinación**: ningún dato inventado por el modelo puede llegar a la API, y ninguna operación con dinero se ejecuta sin validación contra datos vivos del exchange más una confirmación en dos fases aprobada por el humano.
+`mcp-pionex` convierte la librería `pionex_py` en un servidor **Model Context Protocol** que permite a un asistente de IA (Claude Code, Claude Desktop o cualquier cliente MCP) consultar y operar el exchange Pionex con **56 herramientas** organizadas en 7 grupos. Su rasgo diferencial es una **capa de seguridad anti-alucinación**: ningún dato inventado por el modelo puede llegar a la API, y ninguna operación con dinero se ejecuta sin validación contra datos vivos del exchange más una confirmación en dos fases aprobada por el humano.
 
-Estado verificado: las 43 tools registran correctamente, las herramientas públicas funcionan contra la API real de Pionex, los 28 tests offline (capa de seguridad + análisis técnico) pasan, y el flujo completo prepare→confirm se ha probado de extremo a extremo (incluyendo bloqueos por tope de nocional, desviación de precio, token caducado/reutilizado y passthrough literal de errores de la API como `INVALID_APIKEY`).
+Estado verificado: las 56 tools registran correctamente con anotaciones MCP, las herramientas públicas funcionan contra la API real de Pionex, los 45 tests offline (capa de seguridad, anotaciones, idempotencia y análisis técnico) pasan, y el flujo completo prepare→confirm se ha probado de extremo a extremo (incluyendo bloqueos por tope de nocional, desviación de precio, token caducado/reutilizado y passthrough literal de errores de la API como `INVALID_APIKEY`).
 
 ## 2. Inventario de capacidades
 
@@ -56,31 +56,37 @@ Indicadores y conceptos SMC calculados con fórmulas deterministas (`ta.py`, tes
 | `get_fills` | `GET /api/v1/trade/fills` | Ejecuciones recientes con comisión y rol |
 | `get_fills_by_order` | `GET /api/v1/trade/fillsByOrderId` | Precio medio real de una orden |
 
-### 2.5 Trading spot (6 tools, requieren `PIONEX_MCP_TRADING_ENABLED=true`)
+### 2.5 Trading spot (7 tools, requieren `PIONEX_MCP_TRADING_ENABLED=true`)
 
 | Tool | Fase | Qué hace |
 |---|---|---|
-| `prepare_order` | 1/2 | Valida orden LIMIT/MARKET contra datos vivos y devuelve token; **no envía nada** |
+| `prepare_order` | 1/2 | Valida orden LIMIT/MARKET contra datos vivos y devuelve token + `client_order_id` (autogenerado si falta); **no envía nada** |
 | `confirm_action` | 2/2 | Ejecuta cualquier acción preparada (órdenes, bots, earn) con su token de un solo uso |
 | `prepare_cancel_all_orders` | 1/2 | Cancelación masiva de un par, con recuento de abiertas en el resumen |
+| `prepare_cancel_orders` | 1/2 | Cancela una lista de orderIds, verificados contra las órdenes abiertas vivas |
 | `cancel_order` | directa | Cancela UNA orden identificada (riesgo bajo, sin token) |
 | `compute_rebalance_plan` | dry-run | Plan de rebalanceo a pesos objetivo; nunca ejecuta |
 | `prepare_rebalance` | 1/2 | Rebalanceo real: replan con datos vivos + tope por orden + token |
 
 Reglas de una orden (idénticas a la API): LIMIT → `price`+`size`; MARKET BUY → `amount` en quote; MARKET SELL → `size` en base. Valores numéricos como strings, tal cual llegan al exchange.
 
-### 2.6 Grid bots (6 tools; escrituras requieren `PIONEX_MCP_BOTS_ENABLED=true`)
+### 2.6 Bots (14 tools; spot grid requiere `PIONEX_MCP_BOTS_ENABLED=true`, futures grid además `PIONEX_MCP_FUTURES_ENABLED=true`)
 
 | Tool | Qué hace |
 |---|---|
 | `list_bot_orders` | Lista bots (filtros por estado, par, tipo) |
-| `get_spot_grid` | Estado completo de un grid bot |
+| `get_spot_grid` / `get_futures_grid` / `get_smart_copy` | Estado completo de un bot |
 | `get_grid_ai_strategy` | Parámetros recomendados por la IA de Pionex (top/bottom/row) |
-| `check_spot_grid_params` | El **exchange** valida los parámetros, sin crear nada |
+| `check_spot_grid_params` / `check_futures_grid_params` | El **exchange** valida los parámetros, sin crear nada (futures: además tope de apalancamiento) |
 | `prepare_create_spot_grid` | Valida local + checkParams del exchange + tope de inversión → token |
-| `prepare_cancel_spot_grid` | Cierra un grid (muestra el estado vivo en el resumen) → token |
+| `prepare_adjust_spot_grid` | Modifica rango/filas/inversión de un grid en marcha → token |
+| `prepare_invest_in_spot_grid` | Añade capital a un grid (tope de nocional) → token |
+| `prepare_extract_spot_grid_profit` | Retira beneficio sin cerrar (comprobado contra el beneficio vivo) → token |
+| `prepare_cancel_spot_grid` | Cierra un grid (`SELL`/`HOLD` del base) → token |
+| `prepare_create_futures_grid` | Grid perpetuo: símbolo `_PERP` verificado, apalancamiento ≤ `MAX_LEVERAGE`, margen ≤ tope, checkParams → token |
+| `prepare_cancel_futures_grid` | Cierra un futures grid y su posición → token |
 
-### 2.7 Earn / Dual Investment (7 tools; escrituras requieren `PIONEX_MCP_EARN_ENABLED=true`)
+### 2.7 Earn / Dual Investment (11 tools; escrituras requieren `PIONEX_MCP_EARN_ENABLED=true`)
 
 | Tool | Qué hace |
 |---|---|
@@ -88,9 +94,13 @@ Reglas de una orden (idénticas a la API): LIMIT → `price`+`size`; MARKET BUY 
 | `list_dual_products` | Productos abiertos; tipo `DUAL_BASE` o `DUAL_CURRENCY` |
 | `get_dual_prices` | Rendimientos vivos por productId — fuente obligatoria del `profit` |
 | `get_dual_index` | Precio índice del subyacente |
+| `get_dual_delivery_prices` | Histórico de precios de liquidación |
 | `get_dual_balances` | Posiciones dual de la cuenta |
-| `prepare_dual_invest` | Suscripción con tope de nocional → token |
+| `query_dual_invests` | Consulta por `clientDualId` (reconciliación tras una respuesta perdida) |
+| `get_dual_records` | Histórico liquidado/no liquidado |
+| `prepare_dual_invest` | Suscripción con tope de nocional y `client_dual_id` autogenerado → token |
 | `prepare_dual_revoke` | Revocación de una inversión no liquidada → token |
+| `prepare_dual_collect` | Cobro de una inversión liquidada → token |
 
 ## 3. Sistema anti-alucinación
 
@@ -158,7 +168,7 @@ Cada guardia responde con el motivo exacto y la variable de entorno que lo contr
 ## 5. Límites conocidos
 
 - **Sin WebSocket**: los streams de `pionex_py` (PublicStream/PrivateStream) no se exponen — MCP es petición/respuesta; usa `get_klines`/`get_price` para instantáneas.
-- **Futures grid y smart copy**: la librería los soporta; el MCP expone de momento solo lectura genérica (`list_bot_orders`) y ciclo completo para spot grid. Ampliar es añadir un `prepare_*` + `@executor` siguiendo el patrón.
+- **Futures grid**: ciclo crear/cerrar completo; ajustar y reducir posición (`adjust_futures_grid`, `reduce_futures_grid`) no se exponen todavía. **Smart copy**: solo lectura. **Señales de usuario y Earn Arbitrage**: no soportados por `pionex_py`.
 - **`cancel_order` es directa** (sin token) por decisión de diseño: cancelar una orden identificada es de bajo riesgo.
 - **Tokens en memoria**: las confirmaciones pendientes viven en el proceso; reiniciar el servidor las invalida (comportamiento deseado).
 - La API de Pionex limita klines a 500/petición (paginamos hasta 5000) e histórico de órdenes a 200.
@@ -167,7 +177,7 @@ Cada guardia responde con el motivo exacto y la variable de entorno que lo contr
 
 | Prueba | Resultado |
 |---|---|
-| Registro de tools | 43/43 |
+| Registro de tools | 56/56 (todas con anotaciones MCP) |
 | Tests offline capa seguridad (`pytest tests/`) | 11/11 pasan |
 | API pública real (precio, depth, ticker, klines, símbolos) | OK, valores vivos |
 | Símbolo inexistente / intervalo inválido / sin credenciales | Bloqueados con mensaje correctivo |

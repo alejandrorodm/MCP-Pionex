@@ -3,8 +3,9 @@
 Servidor MCP para el exchange Pionex, construido sobre la librería `pionex_py`
 (dependencia desde PyPI; para desarrollar contra un checkout local en
 `../pionex_py`, descomenta el override `[tool.uv.sources]` del pyproject).
-Expone mercado, cuenta, trading spot, grid bots y Dual Investment como
-herramientas MCP con una capa estricta anti-alucinación.
+Expone mercado, análisis técnico, cuenta, trading spot, spot/futures grid
+bots y Dual Investment como herramientas MCP con una capa estricta
+anti-alucinación y anotaciones MCP en cada tool.
 
 Repo: <https://github.com/alejandrorodm/MCP-Pionex>
 
@@ -13,7 +14,7 @@ Repo: <https://github.com/alejandrorodm/MCP-Pionex>
 ```bash
 uv sync                          # instalar (crea .venv)
 uv run mcp-pionex                # arrancar el servidor (stdio)
-uv run --with pytest pytest tests/ -q   # tests offline de la capa de seguridad
+uv run --with pytest pytest tests/ -q   # tests offline (seguridad, anotaciones, idempotencia, TA)
 ```
 
 Verificación rápida de registro de tools:
@@ -54,15 +55,30 @@ src/mcp_pionex/
 Cada tool sigue el mismo esqueleto:
 
 ```python
-@mcp.tool()
+@mcp.tool(annotations=READ)          # READ | PREPARE | EXECUTE | LOCAL (safety.py)
 @guarded("GET /api/v1/...")          # fuente que irá en el envelope
 def tool_name(...) -> dict:
+    """Purpose. When to use vs siblings.
+
+    Args: ... (rangos y formato)
+    Returns: ... (forma de `data`). Requisitos/gate."""
     require_credentials()            # o require_trading()/require_bots()/require_earn()
     validate_enum(...)               # vocabularios cerrados
     verify_symbol(symbol)            # existencia en vivo + whitelist
     response = xxx_client().método(...)
     return response["data"]          # guarded lo envuelve en el envelope
 ```
+
+**Anotaciones** (constantes en `safety.py`): `LOCAL` (meta, sin red), `READ`
+(lecturas del exchange), `PREPARE` (paso 1: no toca el exchange pero acuña
+token → no idempotente), `EXECUTE` (`confirm_action`, `cancel_order`:
+destructivas, idempotentes por token de un solo uso). Todo tool debe llevar
+una — `tests/test_annotations.py` lo comprueba, junto con que la descripción
+tenga secciones `Args`/`Returns` (Glama puntúa esto).
+
+**Docstrings**: en inglés, estructura Purpose → cuándo usarla frente a tools
+hermanas → `Args` con rangos → `Returns` con la forma de `data` → requisitos
+(credenciales/gate). Es lo que evalúa el «Tool Definition Quality» de Glama.
 
 `@guarded(source)` convierte el retorno en un *envelope* de procedencia
 (`{ok, source, fetched_at, computed, data}`) y cualquier excepción en un
@@ -84,6 +100,11 @@ Toda acción que cambia estado sigue: `prepare_*` → `confirm_action(token)`.
 - Para añadir una acción nueva: registrar el ejecutor con
   `@executor("nombre")` en el módulo de tools correspondiente y crear su
   `prepare_*` que valide TODO antes de llamar a `prepare_action`.
+- **Idempotencia**: `prepare_order` y `prepare_dual_invest` siempre fijan un
+  `clientOrderId`/`clientDualId` (`safety.client_order_id`, autogenerado
+  `mcp-…`/`dual-…` si el caller no lo da) y lo devuelven; las instructions
+  ordenan reconciliar con `get_order_by_client_id`/`query_dual_invests`
+  antes de re-preparar.
 
 ### Puertas y límites (solo operador)
 
@@ -95,15 +116,17 @@ con el modelo jamás debe poder cambiarlos — no añadas tools que modifiquen
 |---|---|---|
 | `PIONEX_API_KEY` / `PIONEX_API_SECRET` | vacío | credenciales |
 | `PIONEX_MCP_TRADING_ENABLED` | false | habilita trading spot |
-| `PIONEX_MCP_BOTS_ENABLED` | false | habilita crear/cerrar bots |
-| `PIONEX_MCP_EARN_ENABLED` | false | habilita invertir/revocar dual |
+| `PIONEX_MCP_BOTS_ENABLED` | false | habilita spot grid (crear/ajustar/cerrar) |
+| `PIONEX_MCP_FUTURES_ENABLED` | false | habilita futures grid (requiere también BOTS) |
+| `PIONEX_MCP_EARN_ENABLED` | false | habilita invertir/revocar/cobrar dual |
 | `PIONEX_MCP_MAX_ORDER_NOTIONAL` | 100 | tope quote por acción |
 | `PIONEX_MCP_MAX_PRICE_DEVIATION_PCT` | 10 | desviación máx. precio LIMIT |
+| `PIONEX_MCP_MAX_LEVERAGE` | 3 | apalancamiento máx. futures grid |
 | `PIONEX_MCP_SYMBOL_WHITELIST` | vacío | restringe pares operables |
 | `PIONEX_MCP_CONFIRMATION_TTL` | 120 | caducidad de tokens |
 | `PIONEX_MCP_AUDIT_LOG` | `~/.mcp_pionex/audit.jsonl` | log JSONL de prepare/execute |
 
-## Catálogo de tools (43)
+## Catálogo de tools (56)
 
 **Meta (2):** `get_server_status`, `get_safety_rules`.
 
@@ -114,41 +137,42 @@ con el modelo jamás debe poder cambiarlos — no añadas tools que modifiquen
 
 **Análisis técnico — público, todo `computed` (5):** `get_emas`,
 `get_indicators` (RSI 14, MACD 12-26-9, ATR 14, Bollinger 20-2, SMA/EMA
-20/50/200), `detect_fvg` (Fair Value Gaps, definición 3-velas, con estado
-open/partially_filled/filled), `detect_order_blocks` (heurística de
-desplazamiento cuerpo > factor×ATR, estado fresh/mitigated/broken),
-`get_market_structure` (swings fractales HH/LH/HL/LL + tendencia). Cálculo
-puro en `ta.py` (testeado offline en `tests/test_ta.py`); las tools en
-`tools/analysis.py` solo obtienen klines vivas y envuelven con `computed:
-true` + nota con la definición exacta.
+20/50/200), `detect_fvg`, `detect_order_blocks`, `get_market_structure`.
+Cálculo puro en `ta.py` (testeado offline en `tests/test_ta.py`).
 
 **Cuenta — lectura con credenciales (8):** `get_balances`, `get_portfolio`
 (valorado en vivo, `computed`), `get_open_orders`, `get_order`,
-`get_order_by_client_id`, `get_order_history`, `get_fills`,
+`get_order_by_client_id` (reconciliación), `get_order_history`, `get_fills`,
 `get_fills_by_order`.
 
-**Trading — dos fases, gate de trading (6):** `prepare_order`,
-`prepare_cancel_all_orders`, `cancel_order` (directo: bajo riesgo),
-`compute_rebalance_plan` (siempre dry-run), `prepare_rebalance`,
-`confirm_action` (ejecutor común de TODAS las acciones preparadas, también
-bots y earn).
+**Trading — dos fases, gate de trading (7):** `prepare_order` (con
+`client_order_id`), `prepare_cancel_all_orders`, `prepare_cancel_orders`
+(lista de ids verificada contra órdenes abiertas), `cancel_order` (directo:
+bajo riesgo), `compute_rebalance_plan` (siempre dry-run),
+`prepare_rebalance`, `confirm_action` (ejecutor común de TODAS las acciones
+preparadas, también bots y earn).
 
-**Bots — gate de bots para escrituras (6):** `list_bot_orders`,
-`get_spot_grid`, `get_grid_ai_strategy`, `check_spot_grid_params` (validación
-del exchange, sin crear nada), `prepare_create_spot_grid`,
-`prepare_cancel_spot_grid`.
+**Bots (14):** lectura `list_bot_orders`, `get_spot_grid`,
+`get_grid_ai_strategy`, `check_spot_grid_params`, `get_futures_grid`,
+`check_futures_grid_params` (aplica `check_leverage`), `get_smart_copy`;
+spot grid (gate bots) `prepare_create_spot_grid`, `prepare_adjust_spot_grid`,
+`prepare_invest_in_spot_grid`, `prepare_extract_spot_grid_profit`,
+`prepare_cancel_spot_grid`; futures grid (gate bots + futures)
+`prepare_create_futures_grid` (base `X.PERP` → verifica `X_QUOTE_PERP` en
+mercado PERP), `prepare_cancel_futures_grid`.
 
-**Earn / Dual Investment — gate de earn para escrituras (7):**
-`list_dual_symbols`, `list_dual_products`, `get_dual_prices`,
-`get_dual_index`, `get_dual_balances`, `prepare_dual_invest`,
-`prepare_dual_revoke`.
+**Earn / Dual Investment (11):** `list_dual_symbols`, `list_dual_products`,
+`get_dual_prices`, `get_dual_index`, `get_dual_delivery_prices`,
+`get_dual_balances`, `query_dual_invests`, `get_dual_records`,
+`prepare_dual_invest` (con `client_dual_id`), `prepare_dual_revoke`,
+`prepare_dual_collect`.
 
 ## Reglas anti-alucinación (diseño)
 
 1. **Vocabularios cerrados** en `safety.py`: `VALID_SIDES`,
    `VALID_ORDER_TYPES`, `VALID_MARKET_TYPES` (SPOT/PERP),
    `VALID_KLINE_INTERVALS` (1M…1D), `VALID_GRID_TYPES`, `VALID_TRENDS`,
-   `VALID_DUAL_TYPES`. Los mensajes de error incluyen la lista válida
+   `VALID_DUAL_TYPES`, `VALID_CLOSE_SELL_MODELS`, `VALID_DUAL_FILTERS`. Los mensajes de error incluyen la lista válida
    completa para que el modelo se autocorrija.
 2. **`verify_symbol`**: todo símbolo se comprueba contra
    `GET /api/v1/common/symbols` (caché 10 min) y contra la whitelist del
@@ -182,8 +206,10 @@ del exchange, sin crear nada), `prepare_create_spot_grid`,
   grid, `bu_order_id` en smart copy) — `pionex_py` ya lo respeta; no
   «normalices».
 - Dual Investment: pares BTC/ETH usan quote `USDXO`, el resto `USDT`.
-- Los tests en `tests/` son offline (solo `safety.py`); las smoke-tests de
-  mercado golpean la API pública real.
+- Los tests en `tests/` son offline (`safety.py`, anotaciones, idempotencia,
+  `ta.py`); las smoke-tests de mercado golpean la API pública real.
+- Los atributos del SDK son snake_case también en `Tool` (`input_schema`,
+  `annotations.read_only_hint`).
 
 ## Documentos
 
@@ -192,6 +218,7 @@ del exchange, sin crear nada), `prepare_create_spot_grid`,
   posturas de seguridad, troubleshooting, extensión.
 - `docs/INFORME.md` — informe completo de capacidades y manual de uso.
 - `examples/ollama_bridge.py` — puente agéntico Ollama↔MCP de referencia.
-- `.github/workflows/ci.yml` — CI: tests + comprobación de 43 tools.
+- `.github/workflows/ci.yml` — CI: tests + comprobación de 56 tools.
+- `CHANGELOG.md` — historial de versiones.
 - API oficial: <https://pionex-doc.gitbook.io/apidocs/> y
   <https://github.com/pionex-official/pionex-open-api>.

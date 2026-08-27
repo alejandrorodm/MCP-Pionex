@@ -56,10 +56,12 @@ Todo por variables de entorno (plantilla en [`.env.example`](../.env.example)):
 |---|---|---|
 | `PIONEX_API_KEY` / `PIONEX_API_SECRET` | — | Credenciales. Solo en el entorno del servidor, **nunca en el chat** |
 | `PIONEX_MCP_TRADING_ENABLED` | `false` | Habilita órdenes spot y rebalanceo |
-| `PIONEX_MCP_BOTS_ENABLED` | `false` | Habilita crear/cerrar grid bots |
-| `PIONEX_MCP_EARN_ENABLED` | `false` | Habilita invertir/revocar Dual Investment |
-| `PIONEX_MCP_MAX_ORDER_NOTIONAL` | `100` | Tope (en moneda quote) por orden/inversión/tramo de rebalanceo |
+| `PIONEX_MCP_BOTS_ENABLED` | `false` | Habilita crear/ajustar/cerrar spot grid bots |
+| `PIONEX_MCP_FUTURES_ENABLED` | `false` | Habilita futures grid (apalancado); requiere además `BOTS_ENABLED` |
+| `PIONEX_MCP_EARN_ENABLED` | `false` | Habilita invertir/revocar/cobrar Dual Investment |
+| `PIONEX_MCP_MAX_ORDER_NOTIONAL` | `100` | Tope (en moneda quote) por orden/inversión/margen/tramo de rebalanceo |
 | `PIONEX_MCP_MAX_PRICE_DEVIATION_PCT` | `10` | Desviación máxima de un precio LIMIT frente al mid-price vivo |
+| `PIONEX_MCP_MAX_LEVERAGE` | `3` | Apalancamiento máximo de un futures grid |
 | `PIONEX_MCP_SYMBOL_WHITELIST` | vacío | `BTC_USDT,ETH_USDT` para restringir el universo operable |
 | `PIONEX_MCP_CONFIRMATION_TTL` | `120` | Segundos de validez de un token de confirmación |
 | `PIONEX_MCP_AUDIT_LOG` | `~/.mcp_pionex/audit.jsonl` | Registro JSONL de cada prepare/execute |
@@ -70,7 +72,8 @@ Todo por variables de entorno (plantilla en [`.env.example`](../.env.example)):
 |---|---|---|
 | **Consulta** (defecto) | solo las credenciales (opcionales) | Precios, análisis, cartera, histórico. Cero riesgo |
 | **Trading acotado** | `TRADING_ENABLED=true` + `MAX_ORDER_NOTIONAL=50` + `SYMBOL_WHITELIST=BTC_USDT,ETH_USDT` | Operar con importes pequeños en pares conocidos |
-| **Completa** | las tres puertas a `true`, tope a tu tolerancia | Gestión integral (órdenes + bots + earn), siempre con confirmación en dos fases |
+| **Completa** | `TRADING`, `BOTS` y `EARN` a `true`, tope a tu tolerancia | Gestión integral (órdenes + spot grid + earn), siempre con confirmación en dos fases |
+| **Con apalancamiento** | lo anterior + `FUTURES_ENABLED=true` + `MAX_LEVERAGE` bajo | Futures grid; el apalancamiento se acota por variable y el modelo no puede subirlo |
 
 ## 5. Integración con Claude
 
@@ -128,6 +131,10 @@ Claude: [confirm_action("c2cea1afedaa-8833064d")]
         Orden ejecutada. orderId 123456789.
 ```
 
+### 5.4 Transporte Streamable HTTP
+
+`uv run mcp-pionex --transport streamable-http --port 8000` sirve el mismo servidor en `http://127.0.0.1:8000/mcp` para varios clientes o acceso remoto. Mantenlo en localhost o detrás de un proxy con autenticación: las credenciales viven en el proceso.
+
 ## 6. Integración con un LLM local
 
 Cualquier runtime local que hable MCP o tenga tool-calling sirve. Tres vías, de menos a más manual:
@@ -148,7 +155,7 @@ LM Studio (≥ 0.3.17) acepta el mismo formato `mcpServers`. En **Program → In
 }
 ```
 
-Carga un modelo con tool-calling (Qwen3, Llama 3.1+, Mistral…) y las 43 tools aparecen en el chat. LM Studio pide confirmación por cada llamada a tool — una capa más sobre el prepare/confirm del servidor.
+Carga un modelo con tool-calling (Qwen3, Llama 3.1+, Mistral…) y las 56 tools aparecen en el chat. LM Studio pide confirmación por cada llamada a tool — una capa más sobre el prepare/confirm del servidor.
 
 ### 6.2 Ollama + mcphost
 
@@ -173,17 +180,19 @@ Es también la referencia si quieres integrar cualquier otro runtime (llama.cpp,
 
 > **Importante con modelos locales**: los modelos pequeños alucinan más, no menos. Las guardas del servidor son idénticas (un símbolo inventado se rechaza igual), pero mantén `PIONEX_MCP_TRADING_ENABLED=false` con modelos locales salvo que supervises cada confirmación.
 
-## 7. Catálogo de herramientas (43)
+## 7. Catálogo de herramientas (56)
+
+Toda tool declara **anotaciones MCP** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`): las `get_*/list_*/detect_*/check_*/query_*/compute_*` son de solo lectura; las `prepare_*` no tocan el exchange pero no son idempotentes (cada llamada acuña un token); `confirm_action` y `cancel_order` son las únicas destructivas.
 
 | Grupo | Tools | Acceso |
 |---|---|---|
-| Meta | `get_server_status`, `get_safety_rules` | siempre |
+| Meta (2) | `get_server_status`, `get_safety_rules` | siempre |
 | Mercado (9) | `list_symbols`, `get_symbol_info`, `get_price`, `get_ticker_24h`, `get_book_ticker`, `get_depth`, `get_recent_trades`, `get_klines`, `get_klines_history` | público |
 | Análisis técnico (5) | `get_emas`, `get_indicators`, `detect_fvg`, `detect_order_blocks`, `get_market_structure` | público (todo `computed`) |
 | Cuenta (8) | `get_balances`, `get_portfolio`, `get_open_orders`, `get_order`, `get_order_by_client_id`, `get_order_history`, `get_fills`, `get_fills_by_order` | API key |
-| Trading (6) | `prepare_order`, `confirm_action`, `prepare_cancel_all_orders`, `cancel_order`, `compute_rebalance_plan`, `prepare_rebalance` | gate trading |
-| Bots (6) | `list_bot_orders`, `get_spot_grid`, `get_grid_ai_strategy`, `check_spot_grid_params`, `prepare_create_spot_grid`, `prepare_cancel_spot_grid` | lectura: API key · escritura: gate bots |
-| Earn (7) | `list_dual_symbols`, `list_dual_products`, `get_dual_prices`, `get_dual_index`, `get_dual_balances`, `prepare_dual_invest`, `prepare_dual_revoke` | lectura: pública/API key · escritura: gate earn |
+| Trading (7) | `prepare_order`, `confirm_action`, `prepare_cancel_all_orders`, `prepare_cancel_orders`, `cancel_order`, `compute_rebalance_plan`, `prepare_rebalance` | gate trading |
+| Bots (14) | lectura: `list_bot_orders`, `get_spot_grid`, `get_grid_ai_strategy`, `check_spot_grid_params`, `get_futures_grid`, `check_futures_grid_params`, `get_smart_copy` · spot grid: `prepare_create_spot_grid`, `prepare_adjust_spot_grid`, `prepare_invest_in_spot_grid`, `prepare_extract_spot_grid_profit`, `prepare_cancel_spot_grid` · futures grid: `prepare_create_futures_grid`, `prepare_cancel_futures_grid` | lectura: API key · spot: gate bots · futures: gate bots + futures |
+| Earn (11) | `list_dual_symbols`, `list_dual_products`, `get_dual_prices`, `get_dual_index`, `get_dual_delivery_prices`, `get_dual_balances`, `query_dual_invests`, `get_dual_records`, `prepare_dual_invest`, `prepare_dual_revoke`, `prepare_dual_collect` | lectura: pública/API key · escritura: gate earn |
 
 Detalle campo a campo en [`INFORME.md`](INFORME.md).
 
@@ -193,13 +202,15 @@ Detalle campo a campo en [`INFORME.md`](INFORME.md).
 
 **Análisis técnico / SMC** — `get_indicators` (RSI, MACD, ATR, Bollinger) + `get_emas("20,50,200")` para el contexto; `get_market_structure` para la tendencia (HH/HL vs LH/LL); `detect_fvg(only_open=True)` y `detect_order_blocks` para zonas de interés. Todo se calcula sobre velas vivas y viene marcado `computed: true` con la definición exacta en `note` — pide al asistente que cite las zonas con sus timestamps. Ejemplo: *«analiza BTC_USDT en 4H: tendencia, FVGs abiertos y order blocks sin mitigar cerca del precio»*.
 
-**Compra/venta** — `prepare_order` → mostrar resumen → aprobación humana → `confirm_action`. Reglas de la API: LIMIT lleva `price`+`size`; MARKET BUY lleva `amount` (quote); MARKET SELL lleva `size` (base). Números como strings.
+**Compra/venta** — `prepare_order` → mostrar resumen → aprobación humana → `confirm_action`. Reglas de la API: LIMIT lleva `price`+`size`; MARKET BUY lleva `amount` (quote); MARKET SELL lleva `size` (base). Números como strings. Cada orden preparada lleva un `client_order_id` (autogenerado `mcp-…` si no se indica): si la respuesta del `confirm_action` se pierde, `get_order_by_client_id` permite comprobar si la orden llegó **antes** de volver a prepararla.
+
+**Futures grid** — `check_futures_grid_params` (veredicto del exchange + tope de apalancamiento) → `prepare_create_futures_grid` (base con sufijo `.PERP`, p. ej. `BTC.PERP`) → `confirm_action`. Requiere `BOTS_ENABLED` y `FUTURES_ENABLED`; el apalancamiento nunca supera `MAX_LEVERAGE`.
 
 **Rebalanceo de cartera** — `get_portfolio` → `compute_rebalance_plan('{"BTC":0.5,"ETH":0.3,"USDT":0.2}')` (dry-run, redondeado a la precisión del exchange, descarta lo que no llega al mínimo) → `prepare_rebalance` → `confirm_action`.
 
 **Grid bot** — `get_grid_ai_strategy` (parámetros recomendados por Pionex, no inventados) → `check_spot_grid_params` (veredicto del exchange) → `prepare_create_spot_grid` → `confirm_action`.
 
-**Dual Investment** — `list_dual_products` → `get_dual_prices` (de aquí sale el `profit`, obligatorio que sea el vivo) → `prepare_dual_invest` → `confirm_action`.
+**Dual Investment** — `list_dual_products` → `get_dual_prices` (de aquí sale el `profit`, obligatorio que sea el vivo) → `prepare_dual_invest` → `confirm_action`. Tras la liquidación: `get_dual_records(status_filter="SETTLED")` → `prepare_dual_collect` → `confirm_action`.
 
 ## 9. Seguridad operacional
 
@@ -229,7 +240,7 @@ Detalle campo a campo en [`INFORME.md`](INFORME.md).
 uv run --with pytest pytest tests/ -q     # 11 tests offline de la capa de seguridad
 ```
 
-CI en GitHub Actions ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): tests + comprobación de que las 43 tools registran, en Python 3.11 y 3.12.
+CI en GitHub Actions ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)): tests + comprobación de que las 56 tools registran, en Python 3.11 y 3.12.
 
 **Añadir una acción de escritura nueva** (p. ej. futures grid):
 

@@ -1,33 +1,34 @@
 """
-Análisis técnico sobre velas reales del exchange.
+Technical analysis over live exchange candles.
 
-Todo lo que sale de aquí es DERIVADO: se calcula con fórmulas/heurísticas
-deterministas (mcp_pionex.ta) sobre klines obtenidas en vivo. Cada respuesta
-va marcada `computed: true` y lleva una nota con la definición exacta y sus
-parámetros, para que el modelo pueda citar el método y nunca presente una
-detección heurística como un hecho del exchange.
+Everything produced here is DERIVED: deterministic formulas/heuristics
+(mcp_pionex.ta) applied to klines fetched live. Every response is marked
+`computed: true` and carries a note with the exact definition and its
+parameters, so the model can cite the method and never present a heuristic
+detection as an exchange fact.
 """
 
 from mcp_pionex import safety, ta
 from mcp_pionex.client import markets_client
-from mcp_pionex.safety import guarded, validate_enum, verify_symbol
+from mcp_pionex.safety import READ, guarded, validate_enum, verify_symbol
 
 _MAX_LOOKBACK = 500
+_MIN_CANDLES = 30
 
 
 def _candles(symbol: str, interval: str, limit: int) -> list:
     validate_enum(interval, safety.VALID_KLINE_INTERVALS, "interval")
-    safety.require(30 <= limit <= _MAX_LOOKBACK,
-                   f"limit must be between 30 and {_MAX_LOOKBACK}")
+    safety.require(_MIN_CANDLES <= limit <= _MAX_LOOKBACK,
+                   f"limit must be between {_MIN_CANDLES} and {_MAX_LOOKBACK}")
     verify_symbol(symbol)
     raw = markets_client().get_klines(
         symbol=symbol, interval=interval, limit=limit,
     )["data"]["klines"]
     candles = ta.parse_klines(raw)
     safety.require(
-        len(candles) >= 30,
+        len(candles) >= _MIN_CANDLES,
         f"Only {len(candles)} candles available for {symbol} {interval}; "
-        f"need at least 30 for analysis.",
+        f"need at least {_MIN_CANDLES} for analysis.",
     )
     return candles
 
@@ -39,16 +40,35 @@ def _last(series: list):
     return None
 
 
+def _round(value):
+    return None if value is None else round(value, 8)
+
+
 def register(mcp):
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     @guarded("GET /api/v1/market/klines + EMA (computed)")
     def get_emas(symbol: str, interval: str, periods: str = "20,50,200",
                  limit: int = 500) -> str:
-        """Valores actuales de EMAs sobre cierres de velas reales.
-        `periods`: lista separada por comas (p. ej. "20,50,200"). Devuelve por
-        periodo el valor de la EMA, si el precio está por encima, y la
-        distancia en %. DERIVADO de klines vivas — no es un dato del exchange."""
+        """Compute the current value of one or more EMAs (exponential moving
+        averages) from live candle closes, and where the price sits relative
+        to each.
+
+        Use for trend-following context ("is price above the 200 EMA?").
+        For a full indicator panel (RSI, MACD, ATR, Bollinger) use
+        get_indicators instead; this tool exists to pick custom periods.
+
+        Args:
+          symbol: exact spot symbol, e.g. 'BTC_USDT'.
+          interval: exactly one of 1M, 5M, 15M, 30M, 60M, 4H, 8H, 12H, 1D.
+          periods: comma-separated integers 2-400 (default "20,50,200").
+          limit: candles to fetch, 30-500 (default 500). A period needs at
+            least that many candles or its value is null.
+
+        Returns `data.emas` keyed "EMA<n>" → {value, price_above,
+        distance_pct} plus last_close, last_candle_time (epoch ms) and
+        candles_used. computed=true: standard EMA (SMA seed, k=2/(n+1)).
+        Public — no credentials."""
         period_list = []
         for piece in periods.split(","):
             piece = piece.strip()
@@ -72,17 +92,34 @@ def register(mcp):
              "candles_used": len(candles), "last_close": price,
              "last_candle_time": candles[-1]["time"], "emas": emas},
             computed=True,
-            note=("EMA estándar (semilla SMA, k=2/(n+1)) sobre cierres de "
-                  f"{len(candles)} velas reales. None = velas insuficientes "
-                  "para ese periodo."),
+            note=("Standard EMA (SMA seed, k=2/(n+1)) over the closes of "
+                  f"{len(candles)} live candles. null = not enough candles "
+                  "for that period."),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     @guarded("GET /api/v1/market/klines + indicators (computed)")
     def get_indicators(symbol: str, interval: str, limit: int = 500) -> str:
-        """Panel de indicadores clásicos sobre velas reales: RSI(14),
-        MACD(12,26,9), ATR(14), Bollinger(20,2) y SMA/EMA 20/50/200 — últimos
-        valores. DERIVADO de klines vivas con fórmulas estándar."""
+        """Compute a panel of classic indicators from live candles: RSI(14),
+        MACD(12,26,9), ATR(14), Bollinger Bands(20,2) and SMA/EMA 20/50/200 —
+        latest values only.
+
+        Use as the default one-call market snapshot before discussing
+        momentum, volatility or trend. For custom EMA periods use get_emas;
+        for price-action structures use detect_fvg, detect_order_blocks or
+        get_market_structure.
+
+        Args:
+          symbol: exact spot symbol, e.g. 'BTC_USDT'.
+          interval: exactly one of 1M, 5M, 15M, 30M, 60M, 4H, 8H, 12H, 1D.
+          limit: candles to fetch, 30-500 (default 500). SMA/EMA 200 need
+            ≥200 candles or they are null.
+
+        Returns `data` with rsi_14, macd_12_26_9 {line, signal, histogram},
+        atr_14, bollinger_20_2 {upper, middle, lower}, sma{}, ema{},
+        last_close, last_candle_time (epoch ms), candles_used.
+        computed=true with standard formulas (Wilder RSI/ATR). Public — no
+        credentials."""
         candles = _candles(symbol, interval, limit)
         closes = [c["close"] for c in candles]
         macd_result = ta.macd(closes)
@@ -113,22 +150,38 @@ def register(mcp):
             "GET /api/v1/market/klines + indicators (computed)",
             data,
             computed=True,
-            note=("Fórmulas estándar: RSI de Wilder, MACD EMA12-EMA26 con señal "
-                  "EMA9, ATR de Wilder, Bollinger SMA20±2σ. None = velas "
-                  "insuficientes."),
+            note=("Standard formulas: Wilder RSI, MACD = EMA12-EMA26 with EMA9 "
+                  "signal, Wilder ATR, Bollinger SMA20 ± 2σ. null = not enough "
+                  "candles."),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     @guarded("GET /api/v1/market/klines + FVG heuristic (computed)")
     def detect_fvg(symbol: str, interval: str, lookback: int = 200,
                    min_gap_pct: float = 0.0, only_open: bool = True) -> str:
-        """Fair Value Gaps (definición de 3 velas) sobre velas reales:
-        FVG alcista cuando low[i+1] > high[i-1]; bajista cuando
-        high[i+1] < low[i-1]. Cada gap incluye zona [bottom, top], timestamp
-        de formación y estado (open / partially_filled / filled).
-        `only_open=True` omite los ya rellenados. `min_gap_pct` filtra huecos
-        menores a ese % del precio. HEURÍSTICA computada, no un hecho del
-        exchange."""
+        """Detect Fair Value Gaps (3-candle imbalances) on live candles and
+        report whether each gap is still open, partially filled or filled.
+
+        Use when the user asks about imbalances, unfilled gaps or
+        "FVG" zones as potential reaction areas. For supply/demand candles
+        use detect_order_blocks; for swing trend use get_market_structure.
+        This is a HEURISTIC computed by the server, not exchange data.
+
+        Definition: bullish FVG when low[i+1] > high[i-1] (zone
+        [high[i-1], low[i+1]]); bearish is symmetric.
+
+        Args:
+          symbol: exact spot symbol, e.g. 'BTC_USDT'.
+          interval: exactly one of 1M, 5M, 15M, 30M, 60M, 4H, 8H, 12H, 1D.
+          lookback: candles to scan, 30-500 (default 200).
+          min_gap_pct: ignore gaps smaller than this % of price, 0-10
+            (default 0 = keep all).
+          only_open: true (default) omits gaps already fully filled.
+
+        Returns `data.fvgs`: list of {direction, top, bottom, formed_at
+        (epoch ms), status: open|partially_filled|filled}, plus
+        total_detected, returned, last_close and candles_used.
+        computed=true. Public — no credentials."""
         safety.require(0.0 <= min_gap_pct <= 10.0,
                        "min_gap_pct must be between 0 and 10")
         candles = _candles(symbol, interval, lookback)
@@ -142,22 +195,47 @@ def register(mcp):
              "candles_used": len(candles), "last_close": candles[-1]["close"],
              "total_detected": total, "returned": len(gaps), "fvgs": gaps},
             computed=True,
-            note=("Definición 3-velas: bullish si low[i+1] > high[i-1] "
-                  "(zona [high[i-1], low[i+1]]); bearish simétrico. Estado "
-                  "evaluado con las velas posteriores a la formación. "
-                  "Timestamps en ms epoch."),
+            note=("3-candle definition: bullish if low[i+1] > high[i-1] "
+                  "(zone [high[i-1], low[i+1]]); bearish symmetric. Status "
+                  "evaluated against candles after formation. Timestamps in "
+                  "epoch ms."),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     @guarded("GET /api/v1/market/klines + order-block heuristic (computed)")
     def detect_order_blocks(symbol: str, interval: str, lookback: int = 200,
                             displacement_factor: float = 1.5,
                             only_unmitigated: bool = False) -> str:
-        """Order blocks sobre velas reales, heurística de desplazamiento:
-        una vela con cuerpo > displacement_factor × ATR(14) marca impulso;
-        el order block es la última vela contraria en las 3 previas
-        (zona [low, high]). Estado: fresh / mitigated / broken.
-        HEURÍSTICA computada — otras definiciones de OB darán zonas distintas."""
+        """Detect order blocks — the last opposing candle before an impulsive
+        move — on live candles, and classify each as fresh, mitigated or
+        broken.
+
+        Use when the user asks for supply/demand zones or "order blocks" as
+        potential reaction areas. For 3-candle imbalances use detect_fvg;
+        for swing-based trend use get_market_structure. This is a HEURISTIC
+        computed by the server; other order-block definitions will yield
+        different zones.
+
+        Definition: a candle whose body |close-open| exceeds
+        displacement_factor × ATR(14) marks an impulse; the order block is
+        the last opposing-colour candle among the 3 before it, zone
+        [low, high]. fresh = price has not returned; mitigated = price
+        traded into the zone; broken = a close beyond the far side.
+
+        Args:
+          symbol: exact spot symbol, e.g. 'BTC_USDT'.
+          interval: exactly one of 1M, 5M, 15M, 30M, 60M, 4H, 8H, 12H, 1D.
+          lookback: candles to scan, 30-500 (default 200); at least ~30 are
+            needed for a stable ATR.
+          displacement_factor: impulse threshold in ATR multiples, 0.5-5
+            (default 1.5; higher = fewer, stronger blocks).
+          only_unmitigated: true returns only `fresh` blocks (default false
+            returns all with their status).
+
+        Returns `data.order_blocks`: list of {direction: bullish|bearish,
+        top, bottom, formed_at (epoch ms), status}, plus total_detected,
+        returned, last_close, candles_used and displacement_factor.
+        computed=true. Public — no credentials."""
         safety.require(0.5 <= displacement_factor <= 5.0,
                        "displacement_factor must be between 0.5 and 5")
         candles = _candles(symbol, interval, lookback)
@@ -175,20 +253,40 @@ def register(mcp):
              "total_detected": total, "returned": len(blocks),
              "order_blocks": blocks},
             computed=True,
-            note=("Desplazamiento = |close-open| > factor × ATR(14) de Wilder. "
-                  "OB = última vela contraria en las 3 previas al impulso, "
-                  "zona [low, high]. broken = cierre más allá del lado opuesto. "
-                  "Timestamps en ms epoch."),
+            note=("Displacement = |close-open| > factor × Wilder ATR(14). "
+                  "OB = last opposing candle within the 3 before the impulse, "
+                  "zone [low, high]. broken = close beyond the far side. "
+                  "Timestamps in epoch ms."),
         )
 
-    @mcp.tool()
+    @mcp.tool(annotations=READ)
     @guarded("GET /api/v1/market/klines + swing structure (computed)")
     def get_market_structure(symbol: str, interval: str, lookback: int = 200,
                              swing_strength: int = 2) -> str:
-        """Estructura de mercado sobre velas reales: puntos de giro (fractales
-        de `swing_strength` velas por lado) etiquetados HH/LH/HL/LL, y lectura
-        de tendencia (uptrend/downtrend/range) de las últimas 4 etiquetas.
-        HEURÍSTICA computada."""
+        """Identify swing highs/lows on live candles, label them HH/LH/HL/LL
+        and derive a trend reading (uptrend, downtrend or range).
+
+        Use when the user asks whether a market is trending or ranging, or
+        for recent swing levels. For indicator-based momentum use
+        get_indicators; for zones use detect_fvg / detect_order_blocks.
+        This is a HEURISTIC computed by the server.
+
+        Definition: a swing high is a candle whose high strictly exceeds the
+        highs of `swing_strength` candles on each side (fractal); swing lows
+        symmetric. Labels compare each swing with the previous swing of the
+        same kind; the trend is read from the last 4 labels.
+
+        Args:
+          symbol: exact spot symbol, e.g. 'BTC_USDT'.
+          interval: exactly one of 1M, 5M, 15M, 30M, 60M, 4H, 8H, 12H, 1D.
+          lookback: candles to scan, 30-500 (default 200).
+          swing_strength: candles required on each side, 1-10 (default 2;
+            higher = fewer, more significant swings).
+
+        Returns `data` with trend, swing_count, `swings` (last 20:
+        {kind: high|low, label: HH|LH|HL|LL, price, time epoch ms}),
+        last_close and candles_used. computed=true. Public — no
+        credentials."""
         safety.require(1 <= swing_strength <= 10,
                        "swing_strength must be between 1 and 10")
         candles = _candles(symbol, interval, lookback)
@@ -202,12 +300,8 @@ def register(mcp):
              "swing_count": len(structure["swings"]),
              "swings": structure["swings"][-20:]},
             computed=True,
-            note=("Fractal: swing high si su high supera estrictamente a las "
-                  f"{swing_strength} velas de cada lado (simétrico para lows). "
-                  "Etiquetas frente al swing previo del mismo tipo. Se "
-                  "devuelven los últimos 20 swings. Timestamps en ms epoch."),
+            note=("Fractal: swing high if its high strictly exceeds the "
+                  f"{swing_strength} candles on each side (symmetric for lows). "
+                  "Labels vs the previous swing of the same kind. Last 20 "
+                  "swings returned. Timestamps in epoch ms."),
         )
-
-
-def _round(value):
-    return None if value is None else round(value, 8)

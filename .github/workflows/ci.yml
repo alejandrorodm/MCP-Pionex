@@ -26,6 +26,6 @@ jobs:
           from mcp_pionex.server import mcp
           import asyncio
           tools = asyncio.run(mcp.list_tools())
-          assert len(tools) == 43, f'expected 43 tools, got {len(tools)}'
+          assert len(tools) == 56, f"expected 56 tools, got {len(tools)}"
           print(len(tools), 'tools registered')
           "

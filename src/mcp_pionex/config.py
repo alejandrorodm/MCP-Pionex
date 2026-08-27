@@ -40,6 +40,8 @@ class Settings:
     trading_enabled: bool = field(default_factory=lambda: _env_bool("PIONEX_MCP_TRADING_ENABLED"))
     bots_enabled: bool = field(default_factory=lambda: _env_bool("PIONEX_MCP_BOTS_ENABLED"))
     earn_enabled: bool = field(default_factory=lambda: _env_bool("PIONEX_MCP_EARN_ENABLED"))
+    # Futures grid bots use leverage: separate gate on top of bots_enabled.
+    futures_enabled: bool = field(default_factory=lambda: _env_bool("PIONEX_MCP_FUTURES_ENABLED"))
 
     # -- hard limits -------------------------------------------------------
     # Max quote-notional (in the pair's quote currency, typically USDT) that
@@ -51,6 +53,10 @@ class Settings:
     # rejected (fat-finger / hallucinated-price guard).
     max_price_deviation_pct: float = field(
         default_factory=lambda: _env_float("PIONEX_MCP_MAX_PRICE_DEVIATION_PCT", 10.0)
+    )
+    # Maximum leverage a futures grid prepared through this server may use.
+    max_leverage: int = field(
+        default_factory=lambda: int(_env_float("PIONEX_MCP_MAX_LEVERAGE", 3))
     )
     # Optional symbol whitelist ("BTC_USDT,ETH_USDT"). Empty = all symbols
     # that exist on the exchange are allowed (existence is always verified).

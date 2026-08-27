@@ -1,7 +1,7 @@
 """
 Puente mínimo entre un LLM local servido por Ollama y el servidor mcp-pionex.
 
-Arranca el servidor MCP por stdio, expone sus 43 tools al modelo local vía la
+Arranca el servidor MCP por stdio, expone sus 56 tools al modelo local vía la
 API de tool-calling de Ollama, y ejecuta el bucle agéntico (modelo → tool →
 resultado → modelo) respetando las guardas del servidor: si el modelo intenta
 algo bloqueado, recibe el mensaje correctivo literal del servidor.
